@@ -1,25 +1,27 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 
 export default function Calculator() {
   // --- STATE ---
-  const [hargaInput, setHargaInput] = useState("0");
-  const [margin, setMargin] = useState(52); // Default margin
+  const [hargaInput, setHargaInput] = useState(""); // Customer offered price (nego)
+  const [margin, setMargin] = useState(0); // Derived margin (%)
 
-  // State untuk Data & Search
-  const [items, setItems] = useState([]); // Menampung semua data dari Sheet
-  const [searchTerm, setSearchTerm] = useState(""); // Apa yang diketik user
-  const [filteredItems, setFilteredItems] = useState([]); // Hasil filter pencarian
-  const [showDropdown, setShowDropdown] = useState(false); // Menampilkan dropdown
+  // Sheet data & search
+  const [items, setItems] = useState([]); // All items from sheet
+  const [searchTerm, setSearchTerm] = useState(""); // User query
+  const [filteredItems, setFilteredItems] = useState([]); // Search results
+  const [showDropdown, setShowDropdown] = useState(false); // Toggle dropdown
+  const [basePrice, setBasePrice] = useState(0); // Hidden product base price
+  const searchBoxRef = useRef(null);
 
-  // --- FETCH DATA (Langkah Baru) ---
+  // --- FETCH DATA ---
   useEffect(() => {
     const fetchData = async () => {
       try {
         const res = await fetch("/api/items");
         const data = await res.json();
-        // Pastikan data berupa array sebelum di-set
+        // Guard shape
         if (Array.isArray(data)) {
           setItems(data);
         }
@@ -30,7 +32,18 @@ export default function Calculator() {
     fetchData();
   }, []);
 
-  // --- HELPER FUNCTIONS ---
+  // Close dropdown when clicking outside search box
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (searchBoxRef.current && !searchBoxRef.current.contains(e.target)) {
+        setShowDropdown(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  // --- HELPERS ---
   const formatRupiah = (angka) => {
     let numberString = angka.toString().replace(/[^,\d]/g, "");
     let split = numberString.split(",");
@@ -51,19 +64,34 @@ export default function Calculator() {
     return "bg-[#4ade80]";
   };
 
-  // --- LOGIC UTAMA ---
-  const cleanHarga = parseFloat(hargaInput.replace(/\./g, "")) || 0;
-  const profit = cleanHarga * (margin / 100);
-  const estimasiHarga = Math.ceil(cleanHarga + profit);
+  const normalizeNumber = (value, fallback = 0) => {
+    if (typeof value === "number") return value;
+    if (!value) return fallback;
+    // Remove all non-digits so "50.000", "Rp25,000" -> "50000" / "25000"
+    const cleaned = String(value).replace(/[^\d]/g, "");
+    const num = Number(cleaned);
+    return Number.isFinite(num) ? num : fallback;
+  };
 
   // --- HANDLERS ---
   const handleInputChange = (e) => {
     const rawVal = e.target.value;
     const formatted = formatRupiah(rawVal);
     setHargaInput(formatted);
+
+    // Recalculate margin based on hidden base price and customer offer
+    const negoPrice = normalizeNumber(rawVal);
+    if (basePrice > 0 && negoPrice >= basePrice) {
+      const marginPercent = ((negoPrice - basePrice) / basePrice) * 100;
+      const safeMargin = Math.min(100, Math.max(0, Math.round(marginPercent)));
+      setMargin(safeMargin);
+    } else {
+      // If offer is below base price or base missing, margin is 0
+      setMargin(0);
+    }
   };
 
-  // Handler saat mengetik di pencarian
+  // Search input handler
   const handleSearchChange = (e) => {
     const query = e.target.value;
     setSearchTerm(query);
@@ -79,16 +107,19 @@ export default function Calculator() {
     }
   };
 
-  // Handler saat item dipilih dari dropdown
+  // On select search item
   const handleSelectItem = (item) => {
-    setSearchTerm(item.nama); // Isi kotak cari dengan nama barang
+    setSearchTerm(item.nama); // Fill search box
 
-    // Ambil Harga Pokok dari data sheet, lalu format ke Rupiah
-    // Jika data kosong, default ke 0
-    const harga = item.hargaPokok || 0;
-    setHargaInput(formatRupiah(harga.toString()));
+    // Read and store base price only (hidden from UI)
+    const hargaPokok = normalizeNumber(item.hargaPokok);
+    setBasePrice(hargaPokok);
 
-    setShowDropdown(false); // Tutup dropdown
+    // Reset user input & margin when switching item
+    setHargaInput("");
+    setMargin(0);
+
+    setShowDropdown(false); // Hide dropdown
   };
 
   return (
@@ -100,7 +131,7 @@ export default function Calculator() {
       {/* --- SECTION INPUT --- */}
       <div className="border border-gray-200 rounded-xl px-6 py-4 mb-6 relative">
         {/* Search Bar */}
-        <div className="mb-6 relative">
+        <div className="mb-6 relative" ref={searchBoxRef}>
           <label className="block text-gray-500 text-sm mb-2">
             Cari Barang
           </label>
@@ -147,7 +178,10 @@ export default function Calculator() {
                     <p className="text-xs text-gray-400">{item.jenis}</p>
                   </div>
                   <span className="text-xs font-bold text-blue-600">
-                    Rp {formatRupiah(item.hargaPokok || 0)}
+                    Rp{" "}
+                    {formatRupiah(
+                      normalizeNumber(item.hargaPokok).toString() || "0"
+                    )}
                   </span>
                 </div>
               ))}
@@ -155,10 +189,10 @@ export default function Calculator() {
           )}
         </div>
 
-        {/* Input Harga */}
+        {/* Input customer offer (nego) */}
         <div>
           <label className="block text-gray-500 text-sm mb-2">
-            Harga Pokok (Rp)
+            Masukkan Harga (Rp)
           </label>
           <input
             type="text"
@@ -193,18 +227,10 @@ export default function Calculator() {
             min="0"
             max="100"
             value={margin}
-            onChange={(e) => setMargin(Number(e.target.value))}
-            className="w-full h-1.5 bg-transparent appearance-none cursor-pointer relative z-10 focus:outline-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:shadow-sm"
+            readOnly
+            className="w-full h-1.5 bg-transparent appearance-none cursor-default pointer-events-none relative z-10 focus:outline-none [&::-webkit-slider-thumb]:appearance-none [&::-webkit-slider-thumb]:w-5 [&::-webkit-slider-thumb]:h-5 [&::-webkit-slider-thumb]:bg-white [&::-webkit-slider-thumb]:rounded-full [&::-webkit-slider-thumb]:shadow-sm"
           />
         </div>
-      </div>
-
-      {/* --- SECTION HASIL --- */}
-      <div className="mt-6 p-4 bg-gray-50 rounded-xl border border-gray-200 text-center">
-        <p className="text-sm text-gray-500 mb-1">Estimasi Harga Jual</p>
-        <span className="font-bold text-2xl text-gray-800">
-          Rp {formatRupiah(estimasiHarga.toString())}
-        </span>
       </div>
     </div>
   );
